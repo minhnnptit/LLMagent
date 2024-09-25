@@ -1,9 +1,8 @@
 from typing import Optional
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright, Playwright
 from utils.spinner import Spinner
 from utils.gpt import gpt
 import asyncio
-from playwright.async_api import async_playwright, Playwright
 from bs4 import BeautifulSoup
 import re
 from utils.file_io import save_file
@@ -119,7 +118,7 @@ class SQLInjector:
                       f" Here's its HTML:\n\n{html}\n"
                       f"Here are the failed SQL payloads:\n{failed_sql_payloads}\n"
                       "Can you suggest actions to take?")
-            response = gpt(system_msg="", user_msg=prompt)
+            response = gpt(system_msg="", user_msg=prompt, model_name="openai-community/gpt2")
 
         lines = response.split('\n')
         plan = []
@@ -142,7 +141,7 @@ class SQLInjector:
 
         prompt = (f"Based on this HTML:\n\n```html\n{html}\n```"
                   f"Execute the following actions:\n\n{filtered_plan}\n")
-        response = gpt(system_msg="", user_msg=prompt)
+        response = gpt(system_msg="", user_msg=prompt, model_name="openai-community/gpt2")
 
         func_str = extract_function(response, "func")
         if func_str:
@@ -169,7 +168,7 @@ class SQLInjector:
 
         prompt = (f"Did the following HTML changes indicate a successful SQL injection?\n\n"
                   f"Before:\n{prevHtml}\n\nAfter:\n{newHtml}")
-        response = gpt(system_msg="", user_msg=prompt)
+        response = gpt(system_msg="", user_msg=prompt, model_name="openai-community/gpt2")
 
         return "YES" in response
 
@@ -184,7 +183,6 @@ class SQLInjector:
 
     async def shutDown(self):
         await self.browser.close()
-
 
 ### Helper Functions ###
 
