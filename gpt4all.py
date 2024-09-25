@@ -3,9 +3,9 @@ import os
 from time import time
 from .file_io import save_file
 
-def gpt(system_msg: str, user_msg: str, model="gpt4all-lora-quantized", log=True):
-    # Khởi tạo GPT4ALL với mô hình
-    model = GPT4All(model)
+def gpt(system_msg: str, user_msg: str, model_name="gpt4all-lora-quantized", log=True):
+    # Khởi tạo GPT4All với mô hình
+    model = GPT4All(model_name)
     
     prompt = f"{system_msg}\n{user_msg}"
     try:
