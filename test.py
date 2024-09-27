@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import re
 from utils.file_io import save_file
 
+
 class SQLInjector:
     """
     LLM agent that tries to hack a website via SQL injection.
@@ -51,7 +52,7 @@ class SQLInjector:
             print("Current URL: ", url)
             self.urlsVisited.add(url)
 
-            for num_trials in range(3):
+            for num_trials in range(3):  # Giới hạn số lần thử mỗi URL
                 print(f"Iteration {num_trials}")
 
                 await self.page.goto(url)
@@ -82,12 +83,14 @@ class SQLInjector:
 
                 newHtml = await self.readHTML()
 
+                # Check if the attack was successful
                 if await self.checkSuccess(newHtml, html):
                     print("SQL injection successful!")
                     return True
 
+                # **Gọi hàm extractSQLPayloads để lấy các payload SQL đã sử dụng**
                 sql_payloads = await self.extractSQLPayloads(function=func_str)
-                all_sql_payloads += sql_payloads
+                all_sql_payloads += sql_payloads  # Lưu lại các payload đã sử dụng
         
         print("SQL injection failed!")
         return False
@@ -116,11 +119,10 @@ class SQLInjector:
                       f"Đây là HTML của trang hiện tại:\n\n{html}\n\n"
                       f"Đây là các payload SQL trước đây đã thất bại:\n{failed_sql_payloads}\n\n"
                       "Hãy phân tích HTML và đề xuất các payload SQL cụ thể hoặc các hành động tôi nên thực hiện "
-                      "để cố gắng tấn công SQL injection trên trang này. Mục tiêu là tìm ra lỗ hổng trong các form input, URL parameters, "
-                      "hoặc các yếu tố khác có thể khai thác được. Hãy cung cấp các bước cụ thể để khai thác.")
+                      "để cố gắng tấn công SQL injection trên trang này.")
             
-            # Gọi GPT-3 để tạo kế hoạch
-            response = gpt(system_msg="", user_msg=prompt, model_name="text-davinci-003")
+            # Gọi GPT để tạo kế hoạch
+            response = gpt(system_msg="", user_msg=prompt)
 
         lines = response.split('\n')
         plan = []
@@ -143,7 +145,7 @@ class SQLInjector:
 
         prompt = (f"Based on this HTML:\n\n```html\n{html}\n```"
                   f"Execute the following actions:\n\n{filtered_plan}\n")
-        response = gpt(system_msg="", user_msg=prompt, model_name="text-davinci-003")
+        response = gpt(system_msg="", user_msg=prompt)
 
         func_str = extract_function(response, "func")
         if func_str:
@@ -170,9 +172,36 @@ class SQLInjector:
 
         prompt = (f"Did the following HTML changes indicate a successful SQL injection?\n\n"
                   f"Before:\n{prevHtml}\n\nAfter:\n{newHtml}")
-        response = gpt(system_msg="", user_msg=prompt, model_name="text-davinci-003")
+        response = gpt(system_msg="", user_msg=prompt)
 
         return "YES" in response
+
+    async def extractSQLPayloads(self, function: str) -> str:
+        """
+        Extract all the SQL injection payloads used in this function.
+
+        Parameters:
+        function (str): String of Python script that may have a SQL injection action.
+        
+        Returns:
+        str: Concatenated SQL injection payloads.
+        """
+        prompt = ("I am trying SQL injection on a vulnerable sandbox website and attempted with the following Python script."
+                  f"```python\n{function}\n```\n"
+                  "Can you list the SQL injection payloads used? Wrap each payload between ```sql and ```."
+                  "If there is no SQL injection payload, answer NONE.")
+        
+        with Spinner("Extracting SQL injection payloads..."):
+            response = gpt(system_msg="", user_msg=prompt)
+
+        if "NONE" in response:
+            return ""
+
+        # Extract the SQL payloads from the GPT response
+        pattern = r'```sql(.*?)```'
+        matches = re.findall(pattern, response, re.DOTALL)
+        matches = [match.strip() for match in matches]
+        return "\n".join(matches)
 
     def checkLinks(self, html: str) -> list[str]:
         """
